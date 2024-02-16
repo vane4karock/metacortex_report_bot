@@ -1,0 +1,141 @@
+import os
+
+import re
+import sys
+import random
+import logging
+import asyncio
+
+from aiogram import Bot, Dispatcher, types
+
+# -------------------------------------------------------------------------------
+
+API_TOKEN = ''
+
+# -------------------------------------------------------------------------------
+
+dp = Dispatcher()
+
+# -------------------------------------------------------------------------------
+
+DATA_PATH = 'data'
+REPORTER_MAP = {
+}
+
+SUCCESS_ANSWERS = ['Понял.', 'Принял.', 'Спасибо!', 'Got it!', 'Ага, записал.']
+
+
+# -------------------------------------------------------------------------------
+
+def __is_auth(username: str) -> bool:
+    return username in REPORTER_MAP
+
+
+def __get_daily_report(message_text: str) -> str:
+    re_match = re.match(r'^get_daily_report (?P<date>\d+_\d+_\d+)$', message_text)
+    if re_match is None:
+        return f'Ошибка в параметрах команды!'
+
+    date = re_match.groupdict().get('date')
+
+    date_dir = os.path.join(DATA_PATH, date)
+
+    if not os.path.exists(date_dir):
+        return f'Не нашел сообщений от "{date}". Невозможно создать отчет!'
+
+    raw_daily_report = [date.replace('_', '.')]
+    for username in sorted(os.listdir(date_dir)):
+        user_report_list = [f'{REPORTER_MAP.get(username)}:']
+        with open(os.path.join(date_dir, username)) as f:
+            raw_message = f.read()
+
+            clear_message = '\n'.join([
+                msg for msg in raw_message.split('\n')
+                if msg.strip() not in ('#работа_за_день', f'#{date}', '')
+            ])
+
+            user_report_list.append(clear_message)
+
+        raw_daily_report.append('\n'.join(user_report_list))
+
+    return '\n\n'.join(raw_daily_report)
+
+
+def __get_date_tag(message_text: str):
+    return re.findall(r'#(\d+_\d+_\d+)', message_text)
+
+
+def __is_daily_report(message_text: str):
+    daily_tag = re.findall(r'#работа_за_день', message_text)
+    if daily_tag:
+        return True
+    return False
+
+
+def __validate_date_tag(message_text: str):
+    date_tag = __get_date_tag(message_text)
+    if date_tag:
+        return True
+    return False
+
+
+def __validate_daily_report(message_text: str, errors_list: list):
+    if not __validate_date_tag(message_text):
+        errors_list.append('Ошибка в теге с датой!')
+
+    return errors_list
+
+
+def __handle_report(message_text: str, username: str) -> None:
+    date_tag = __get_date_tag(message_text)
+
+    for tag in date_tag:
+        date_dir = os.path.join(DATA_PATH, tag)
+        os.makedirs(date_dir, exist_ok=True)
+        with open(os.path.join(date_dir, username), 'w') as f:
+            f.write(message_text)
+
+
+# -------------------------------------------------------------------------------
+
+@dp.message()
+@dp.edited_message()
+@dp.channel_post()
+async def echo_handler(message: types.Message) -> None:
+    message_sender = message.from_user
+    message_text = message.text
+
+    if message_text is None:
+        return
+
+    if message_text.startswith('get_daily_report') and __is_auth(message_sender.username):
+        await message.answer(__get_daily_report(message_text))
+        return
+
+    report_sender = message.forward_from
+    username = report_sender.username if report_sender else message_sender.username
+    if __is_daily_report(message_text) and __is_auth(message_sender.username):
+        errors = list()
+        __validate_daily_report(message_text, errors)
+        if errors:
+            for error in errors:
+                await message.answer(error)
+            return
+
+        __handle_report(message_text, username)
+        await message.answer(random.choice(SUCCESS_ANSWERS))
+
+
+# -------------------------------------------------------------------------------
+
+async def main(api_token):
+    # Initialize bot and dispatcher
+    bot = Bot(token=api_token)
+    await dp.start_polling(bot)
+
+
+if __name__ == '__main__':
+    logging.basicConfig(level=logging.INFO, stream=sys.stdout)
+
+    logging.info('START!')
+    asyncio.run(main(API_TOKEN))
